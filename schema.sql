@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS products (
     name TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     price REAL NOT NULL CHECK(price >= 0),
+    currency TEXT NOT NULL DEFAULT 'ETB',
     image_url TEXT NOT NULL DEFAULT '',
     available INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
@@ -23,6 +24,7 @@ CREATE TABLE IF NOT EXISTS orders (
     status TEXT NOT NULL DEFAULT 'pending_payment'
         CHECK(status IN ('pending_payment', 'payment_review', 'paid', 'processing', 'shipped', 'completed', 'cancelled')),
     total REAL NOT NULL CHECK(total >= 0),
+    currency TEXT NOT NULL DEFAULT 'ETB',
     customer_note TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -34,6 +36,7 @@ CREATE TABLE IF NOT EXISTS order_items (
     product_id INTEGER NOT NULL REFERENCES products(id),
     product_name TEXT NOT NULL,
     unit_price REAL NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'ETB',
     quantity INTEGER NOT NULL CHECK(quantity > 0)
 );
 
@@ -43,6 +46,7 @@ CREATE TABLE IF NOT EXISTS payments (
     proof_filename TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'submitted'
         CHECK(status IN ('submitted', 'approved', 'rejected')),
+    currency TEXT NOT NULL DEFAULT 'ETB',
     admin_note TEXT NOT NULL DEFAULT '',
     reviewed_by INTEGER REFERENCES users(id),
     created_at TEXT NOT NULL,

@@ -178,13 +178,63 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+DEFAULT_CURRENCY = "ETB"
+
+
+def round_money(val) -> float:
+    try:
+        return round(float(val), 2)
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def format_product_dict(p: dict) -> dict:
+    d = dict(p)
+    d["price"] = round_money(d.get("price", 0.0))
+    d["currency"] = d.get("currency") or DEFAULT_CURRENCY
+    return d
+
+
+def format_order_item_dict(oi: dict) -> dict:
+    d = dict(oi)
+    d["unit_price"] = round_money(d.get("unit_price", 0.0))
+    d["currency"] = d.get("currency") or DEFAULT_CURRENCY
+    return d
+
+
+def format_order_dict(o: dict) -> dict:
+    d = dict(o)
+    d["total"] = round_money(d.get("total", 0.0))
+    d["currency"] = d.get("currency") or DEFAULT_CURRENCY
+    return d
+
+
+def format_payment_dict(p: dict) -> dict:
+    d = dict(p)
+    if "total" in d and d["total"] is not None:
+        d["total"] = round_money(d["total"])
+    d["currency"] = d.get("currency") or DEFAULT_CURRENCY
+    return d
+
+
 # --- Endpoint Handlers ---
 async def root_handler(request: Request):
-    return JSONResponse({"name": APP_NAME, "version": "0.2.0", "docs": "/docs", "cloud": "cloudflare-workers"})
+    return JSONResponse({
+        "name": APP_NAME,
+        "version": "0.2.0",
+        "currency": DEFAULT_CURRENCY,
+        "docs": "/docs",
+        "cloud": "cloudflare-workers",
+    })
 
 
 async def health_handler(request: Request):
-    return JSONResponse({"status": "ok", "service": "wude-mart-api", "runtime": "cloudflare-workers-python"})
+    return JSONResponse({
+        "status": "ok",
+        "service": "wude-mart-api",
+        "currency": DEFAULT_CURRENCY,
+        "runtime": "cloudflare-workers-python",
+    })
 
 
 async def register_handler(request: Request):
@@ -238,7 +288,7 @@ async def products_handler(request: Request):
             products = await db.fetchall("SELECT * FROM products ORDER BY id DESC")
         else:
             products = await db.fetchall("SELECT * FROM products WHERE available = 1 ORDER BY id DESC")
-        return JSONResponse(products)
+        return JSONResponse([format_product_dict(p) for p in products])
 
     elif request.method == "POST":
         await get_admin_user(request)
@@ -246,18 +296,18 @@ async def products_handler(request: Request):
         name = str(body.get("name", "")).strip()
         if not name:
             raise HTTPException(status_code=400, detail="Product name is required")
-        price = float(body.get("price", 0.0))
+        price = round_money(body.get("price", 0.0))
         description = str(body.get("description", ""))
         image_url = str(body.get("image_url", ""))
         available = int(bool(body.get("available", True)))
         now = now_iso()
 
         await db.execute(
-            "INSERT INTO products (name, description, price, image_url, available, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [name, description, price, image_url, available, now, now],
+            "INSERT INTO products (name, description, price, currency, image_url, available, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [name, description, price, DEFAULT_CURRENCY, image_url, available, now, now],
         )
         created = await db.fetchone("SELECT * FROM products WHERE name = ? ORDER BY id DESC LIMIT 1", [name])
-        return JSONResponse(created, status_code=201)
+        return JSONResponse(format_product_dict(created), status_code=201)
 
 
 async def product_detail_handler(request: Request):
@@ -268,7 +318,7 @@ async def product_detail_handler(request: Request):
         product = await db.fetchone("SELECT * FROM products WHERE id = ?", [product_id])
         if not product:
             raise HTTPException(status_code=404, detail="Product not found")
-        return JSONResponse(product)
+        return JSONResponse(format_product_dict(product))
 
     elif request.method == "PATCH":
         await get_admin_user(request)
@@ -278,10 +328,13 @@ async def product_detail_handler(request: Request):
         body = await request.json()
         updates = []
         params = []
-        for field in ["name", "description", "price", "image_url"]:
+        for field in ["name", "description", "image_url"]:
             if field in body:
                 updates.append(f"{field} = ?")
                 params.append(body[field])
+        if "price" in body:
+            updates.append("price = ?")
+            params.append(round_money(body["price"]))
         if "available" in body:
             updates.append("available = ?")
             params.append(int(bool(body["available"])))
@@ -292,7 +345,7 @@ async def product_detail_handler(request: Request):
         params.append(product_id)
         await db.execute(f"UPDATE products SET {', '.join(updates)} WHERE id = ?", params)
         updated = await db.fetchone("SELECT * FROM products WHERE id = ?", [product_id])
-        return JSONResponse(updated)
+        return JSONResponse(format_product_dict(updated))
 
     elif request.method == "DELETE":
         await get_admin_user(request)
@@ -315,15 +368,18 @@ async def orders_handler(request: Request):
         else:
             orders = await db.fetchall("SELECT * FROM orders WHERE customer_id = ? ORDER BY id DESC", [user["id"]])
 
+        formatted_orders = []
         for order in orders:
+            order_dict = format_order_dict(order)
             items = await db.fetchall(
                 "SELECT oi.*, p.name as product_name, p.image_url FROM order_items oi JOIN products p ON oi.product_id = p.id WHERE oi.order_id = ?",
                 [order["id"]],
             )
-            order["items"] = items
+            order_dict["items"] = [format_order_item_dict(it) for it in items]
             payments = await db.fetchall("SELECT * FROM payments WHERE order_id = ? ORDER BY id DESC", [order["id"]])
-            order["payments"] = payments
-        return JSONResponse(orders)
+            order_dict["payments"] = [format_payment_dict(pm) for pm in payments]
+            formatted_orders.append(order_dict)
+        return JSONResponse(formatted_orders)
 
     elif request.method == "POST":
         body = await request.json()
@@ -340,27 +396,29 @@ async def orders_handler(request: Request):
             prod = await db.fetchone("SELECT * FROM products WHERE id = ? AND available = 1", [pid])
             if not prod:
                 raise HTTPException(status_code=404, detail=f"Product {pid} not available")
-            unit_price = float(prod["price"])
-            line_total = unit_price * qty
-            total_amount += line_total
+            unit_price = round_money(prod["price"])
+            line_total = round_money(unit_price * qty)
+            total_amount = round_money(total_amount + line_total)
             line_items.append((pid, prod["name"], qty, unit_price))
 
         now = now_iso()
         await db.execute(
-            "INSERT INTO orders (customer_id, status, total, customer_note, created_at, updated_at) VALUES (?, 'pending_payment', ?, ?, ?, ?)",
-            [user["id"], total_amount, customer_note, now, now],
+            "INSERT INTO orders (customer_id, status, total, currency, customer_note, created_at, updated_at) VALUES (?, 'pending_payment', ?, ?, ?, ?, ?)",
+            [user["id"], total_amount, DEFAULT_CURRENCY, customer_note, now, now],
         )
         order = await db.fetchone("SELECT * FROM orders WHERE customer_id = ? ORDER BY id DESC LIMIT 1", [user["id"]])
         order_id = order["id"]
 
         for pid, pname, qty, unit_price in line_items:
             await db.execute(
-                "INSERT INTO order_items (order_id, product_id, product_name, unit_price, quantity) VALUES (?, ?, ?, ?, ?)",
-                [order_id, pid, pname, unit_price, qty],
+                "INSERT INTO order_items (order_id, product_id, product_name, unit_price, currency, quantity) VALUES (?, ?, ?, ?, ?, ?)",
+                [order_id, pid, pname, unit_price, DEFAULT_CURRENCY, qty],
             )
 
-        order["items"] = await db.fetchall("SELECT * FROM order_items WHERE order_id = ?", [order_id])
-        return JSONResponse(order, status_code=201)
+        order_dict = format_order_dict(order)
+        raw_items = await db.fetchall("SELECT * FROM order_items WHERE order_id = ?", [order_id])
+        order_dict["items"] = [format_order_item_dict(it) for it in raw_items]
+        return JSONResponse(order_dict, status_code=201)
 
 
 async def order_detail_handler(request: Request):
@@ -374,12 +432,15 @@ async def order_detail_handler(request: Request):
     if user["role"] != "admin" and order["customer_id"] != user["id"]:
         raise HTTPException(status_code=403, detail="Forbidden")
 
-    order["items"] = await db.fetchall(
+    order_dict = format_order_dict(order)
+    items = await db.fetchall(
         "SELECT oi.*, p.name as product_name, p.image_url FROM order_items oi JOIN products p ON oi.product_id = p.id WHERE oi.order_id = ?",
         [order_id],
     )
-    order["payments"] = await db.fetchall("SELECT * FROM payments WHERE order_id = ? ORDER BY id DESC", [order_id])
-    return JSONResponse(order)
+    order_dict["items"] = [format_order_item_dict(it) for it in items]
+    payments = await db.fetchall("SELECT * FROM payments WHERE order_id = ? ORDER BY id DESC", [order_id])
+    order_dict["payments"] = [format_payment_dict(pm) for pm in payments]
+    return JSONResponse(order_dict)
 
 
 async def order_status_handler(request: Request):
@@ -406,7 +467,7 @@ async def payments_handler(request: Request):
         "JOIN users u ON o.customer_id = u.id "
         "ORDER BY p.id DESC"
     )
-    return JSONResponse(payments)
+    return JSONResponse([format_payment_dict(p) for p in payments])
 
 
 async def order_payment_upload(request: Request):
@@ -448,12 +509,12 @@ async def order_payment_upload(request: Request):
 
     now = now_iso()
     await db.execute(
-        "INSERT INTO payments (order_id, proof_filename, status, created_at) VALUES (?, ?, 'submitted', ?)",
-        [order_id, unique_filename, now],
+        "INSERT INTO payments (order_id, proof_filename, status, currency, created_at) VALUES (?, ?, 'submitted', ?, ?)",
+        [order_id, unique_filename, DEFAULT_CURRENCY, now],
     )
     await db.execute("UPDATE orders SET status = 'payment_review', updated_at = ? WHERE id = ?", [now, order_id])
     payment = await db.fetchone("SELECT * FROM payments WHERE order_id = ? ORDER BY id DESC LIMIT 1", [order_id])
-    return JSONResponse(payment, status_code=201)
+    return JSONResponse(format_payment_dict(payment), status_code=201)
 
 
 async def payment_review_handler(request: Request):
@@ -480,7 +541,7 @@ async def payment_review_handler(request: Request):
     await db.execute("UPDATE orders SET status = ?, updated_at = ? WHERE id = ?", [new_order_status, now, payment["order_id"]])
 
     updated = await db.fetchone("SELECT * FROM payments WHERE id = ?", [payment_id])
-    return JSONResponse(updated)
+    return JSONResponse(format_payment_dict(updated))
 
 
 async def payment_proof_file_handler(request: Request):
