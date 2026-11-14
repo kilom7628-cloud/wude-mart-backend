@@ -439,7 +439,12 @@ async def order_payment_upload(request: Request):
 
     unique_filename = f"proof_{order_id}_{int(time.time())}_{secrets.token_hex(4)}.{ext}"
     storage = get_storage(request)
-    await storage.put(unique_filename, content)
+    try:
+        from pyodide.ffi import to_js
+        js_content = to_js(content)
+    except Exception:
+        js_content = content
+    await storage.put(unique_filename, js_content)
 
     now = now_iso()
     await db.execute(
@@ -485,7 +490,11 @@ async def payment_proof_file_handler(request: Request):
     obj = await storage.get(filename)
     if not obj:
         raise HTTPException(status_code=404, detail="Proof image not found")
-    body = await obj.body()
+    arr = await obj.arrayBuffer()
+    if hasattr(arr, "to_py"):
+        body = bytes(arr.to_py())
+    else:
+        body = bytes(arr)
     content_type = "image/jpeg"
     if filename.endswith(".png"):
         content_type = "image/png"

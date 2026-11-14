@@ -21,3 +21,5 @@ python_modules/
 pylock.toml
 update_admin.sql
 test_*.py
+NEW_ADMIN_PASSWORD.txt
+trigger_upload.py
