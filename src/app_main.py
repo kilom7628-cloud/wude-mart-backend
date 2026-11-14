@@ -145,9 +145,14 @@ def decode_access_token(token: str, secret_key: str) -> dict:
 
 async def get_current_user(request: Request) -> dict:
     auth = request.headers.get("authorization", "")
-    if not auth.startswith("Bearer "):
+    token = None
+    if auth.startswith("Bearer "):
+        token = auth[7:].strip()
+    elif "token" in request.query_params:
+        token = request.query_params["token"].strip()
+
+    if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    token = auth[7:].strip()
     secret_key = get_secret_key(request)
     payload = decode_access_token(token, secret_key)
     user_id = payload.get("sub")
@@ -214,6 +219,11 @@ def format_payment_dict(p: dict) -> dict:
     if "total" in d and d["total"] is not None:
         d["total"] = round_money(d["total"])
     d["currency"] = d.get("currency") or DEFAULT_CURRENCY
+    d["payment_method"] = d.get("payment_method") or "Telebirr"
+    if d.get("proof_filename"):
+        d["proof_url"] = f"/api/payments/proof/{d['proof_filename']}"
+    else:
+        d["proof_url"] = ""
     return d
 
 
@@ -523,12 +533,15 @@ async def payments_handler(request: Request):
     await get_admin_user(request)
     db = get_db(request)
     payments = await db.fetchall(
-        "SELECT p.*, o.total, o.status as order_status, u.email as customer_email "
+        "SELECT p.*, o.total, o.customer_id as order_customer_id, o.status as order_status, u.email as customer_email "
         "FROM payments p "
         "JOIN orders o ON p.order_id = o.id "
         "JOIN users u ON o.customer_id = u.id "
         "ORDER BY p.id DESC"
     )
+    for p in payments:
+        if not p.get("customer_id") and p.get("order_customer_id"):
+            p["customer_id"] = p["order_customer_id"]
     return JSONResponse([format_payment_dict(p) for p in payments])
 
 
@@ -544,10 +557,11 @@ async def order_payment_upload(request: Request):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     form = await request.form()
-    proof_file = form.get("proof") or form.get("file")
+    proof_file = form.get("proof") or form.get("file") or form.get("image") or form.get("screenshot")
+    payment_method = str(form.get("payment_method") or form.get("provider") or form.get("method") or "Telebirr").strip()
 
     if not proof_file or not hasattr(proof_file, "filename"):
-        raise HTTPException(status_code=400, detail="Payment proof image file required ('proof')")
+        raise HTTPException(status_code=400, detail="Payment proof image file required ('proof' or 'file')")
 
     content = await proof_file.read()
     if len(content) > MAX_UPLOAD_BYTES:
@@ -571,15 +585,15 @@ async def order_payment_upload(request: Request):
 
     now = now_iso()
     await db.execute(
-        "INSERT INTO payments (order_id, proof_filename, status, currency, created_at) VALUES (?, ?, 'submitted', ?, ?)",
-        [order_id, unique_filename, DEFAULT_CURRENCY, now],
+        "INSERT INTO payments (order_id, customer_id, proof_filename, payment_method, status, currency, created_at) VALUES (?, ?, ?, ?, 'submitted', ?, ?)",
+        [order_id, user["id"], unique_filename, payment_method, DEFAULT_CURRENCY, now],
     )
     await db.execute("UPDATE orders SET status = 'payment_review', updated_at = ? WHERE id = ?", [now, order_id])
 
     # Record message for customer timeline
     await db.execute(
-        "INSERT INTO order_messages (order_id, sender_id, sender_role, message_type, message, created_at) VALUES (?, ?, 'customer', 'payment_received', 'Payment proof submitted and awaiting administrator verification.', ?)",
-        [order_id, user["id"], now],
+        "INSERT INTO order_messages (order_id, sender_id, sender_role, message_type, message, created_at) VALUES (?, ?, 'customer', 'payment_received', ?, ?)",
+        [order_id, user["id"], f"Payment screenshot uploaded for {payment_method} transfer. Awaiting administrator verification.", now],
     )
 
     payment = await db.fetchone("SELECT * FROM payments WHERE order_id = ? ORDER BY id DESC LIMIT 1", [order_id])
@@ -633,8 +647,19 @@ async def payment_review_handler(request: Request):
 
 
 async def payment_proof_file_handler(request: Request):
-    await get_admin_user(request)
+    user = await get_current_user(request)
     filename = request.path_params["filename"]
+    db = get_db(request)
+
+    # Admin can view all proof images; customer can only view proofs for their own orders
+    if user.get("role") != "admin":
+        payment = await db.fetchone(
+            "SELECT p.id FROM payments p JOIN orders o ON p.order_id = o.id WHERE p.proof_filename = ? AND o.customer_id = ?",
+            [filename, user["id"]],
+        )
+        if not payment:
+            raise HTTPException(status_code=403, detail="Forbidden")
+
     storage = get_storage(request)
     obj = await storage.get(filename)
     if not obj:
@@ -649,7 +674,14 @@ async def payment_proof_file_handler(request: Request):
         content_type = "image/png"
     elif filename.endswith(".webp"):
         content_type = "image/webp"
-    return Response(content=body, media_type=content_type)
+    return Response(
+        content=body,
+        media_type=content_type,
+        headers={
+            "Cache-Control": "private, max-age=3600",
+            "Content-Disposition": f'inline; filename="{filename}"',
+        },
+    )
 
 
 # --- Payment Methods Handlers ---

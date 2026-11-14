@@ -43,7 +43,9 @@ CREATE TABLE IF NOT EXISTS order_items (
 CREATE TABLE IF NOT EXISTS payments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     order_id INTEGER NOT NULL REFERENCES orders(id),
+    customer_id INTEGER REFERENCES users(id),
     proof_filename TEXT NOT NULL DEFAULT '',
+    payment_method TEXT NOT NULL DEFAULT 'Telebirr',
     status TEXT NOT NULL DEFAULT 'submitted'
         CHECK(status IN ('submitted', 'approved', 'rejected')),
     currency TEXT NOT NULL DEFAULT 'ETB',
