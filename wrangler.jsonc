@@ -1,0 +1,20 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "wude-mart-backend",
+  "main": "src/worker.py",
+  "compatibility_date": "2024-11-01",
+  "compatibility_flags": ["python_workers"],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "wude-mart-db",
+      "database_id": "8c2a76a3-69d7-4b9f-a858-43534d5c0319"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "STORAGE",
+      "bucket_name": "wude-mart-storage"
+    }
+  ]
+}

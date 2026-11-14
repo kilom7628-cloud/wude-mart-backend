@@ -1,5 +1,17 @@
 .env
 .venv/
+.venv-workers/
+venv/
 __pycache__/
 *.py[cod]
 data/
+data_backup/
+*.zip
+.wrangler/
+wrapper.*
+login.json
+create_admin.sql
+check_users.sql
+make_admin_sql.py
+export_data.py
+migrate_data.sql
